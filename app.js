@@ -1,7 +1,7 @@
 /* Traveslator. Everything runs on the phone: OCR (Tesseract), translation (Bergamot), offline speech (Whisper). */
 (() => {
 "use strict";
-const APP_VERSION = "8";
+const APP_VERSION = "10";
 const $ = id => document.getElementById(id);
 const errlog = []; function logErr(kind, msg) { errlog.push(new Date().toISOString().slice(11, 19) + " " + kind + ": " + String(msg).slice(0, 200)); if (errlog.length > 25) errlog.shift(); }
 window.addEventListener("error", e => logErr("error", (e.message || "") + " @" + (e.filename || "").split("/").pop() + ":" + e.lineno));
@@ -808,6 +808,19 @@ $("savedAdd").onclick = () => {
 
 /* ---------------- Readiness & packs ---------------- */
 $("readyBtn").onclick = openReadiness;
+async function buildReport() {
+  const est = navigator.storage && navigator.storage.estimate ? await navigator.storage.estimate().catch(() => null) : null;
+  const cached = []; try { for (const k of Object.keys(LANGS)) if ((await MT.isCached(toEnPair(k))) && (await MT.isCached(fromEnPair(k)))) cached.push(k); } catch (_) {}
+  let perms = ""; try { if (navigator.permissions) { const c = await navigator.permissions.query({ name: "camera" }).catch(() => null), m = await navigator.permissions.query({ name: "microphone" }).catch(() => null); perms = `camera ${c ? c.state : "?"}, mic ${m ? m.state : "?"}`; } } catch (_) {}
+  const simd = (() => { try { return WebAssembly.validate(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3, 2, 1, 0, 10, 10, 1, 8, 0, 65, 0, 253, 15, 253, 98, 11])); } catch (_) { return false; } })();
+  return ["Traveslator report v" + APP_VERSION, "device: " + navigator.userAgent, "home screen: " + !!(window.matchMedia("(display-mode: standalone)").matches || navigator.standalone), "online: " + navigator.onLine, "language: " + lang + (autoLang ? " (auto)" : ""), "state: " + JSON.stringify(res), "setup strip: " + ($("stripLabel") ? $("stripLabel").textContent : ""), "packs on phone: " + (cached.join(", ") || "none") + "; listening pack: " + !!store.get("asr"), "live recognizer: " + !!SR + "; voices: " + (window.speechSynthesis ? speechSynthesis.getVoices().length : "n/a"), "permissions: " + (perms || "unknown"), "storage: " + (est ? Math.round((est.usage || 0) / 1048576) + " MB used of " + Math.round((est.quota || 0) / 1048576) + " MB" : "unknown"), "wasm simd: " + simd + "; unpack: " + (typeof DecompressionStream !== "undefined") + "; camera api: " + !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia) + "; secure: " + window.isSecureContext, "errors: " + (errlog.length ? "\n  " + errlog.join("\n  ") : "none")].join("\n");
+}
+async function sendReport(show) {
+  const txt = await buildReport();
+  if (show) { openSheet(`<div class="eyebrow">Report</div><h2>Send this to whoever set up the app</h2><pre style="white-space:pre-wrap;font-size:12px;line-height:1.4;background:var(--card,#fff);padding:10px;border-radius:10px">${esc(txt)}</pre><button class="btn" id="shareRep">Share report</button>`, () => { $("shareRep").onclick = () => sendReport(false); }); return; }
+  if (navigator.share) { try { await navigator.share({ title: "Traveslator report", text: txt }); return; } catch (_) {} }
+  try { await navigator.clipboard.writeText(txt); toast("Report copied. Paste it into a message."); } catch (_) { sendReport(true); }
+}
 async function openReadiness() {
   const voice = !!(window.speechSynthesis && speechSynthesis.getVoices().find(v => v.lang.replace("_", "-").toLowerCase().startsWith(L().speech.slice(0, 2).toLowerCase())));
   const rows = [["Live camera translation", "cam"], [`English ↔ ${L().name} translation`, "mt"], ["Speech recognition", "sr"], ["Spoken translations", "tts"], ["Saved places and phrases", "saved"]];
@@ -823,14 +836,7 @@ async function openReadiness() {
     <button class="btn" id="dlAll">Set up for travel: every language + offline speech (about ${Object.values(PACK_MB).reduce((a, b) => a + b, 0) + 80} MB, once, on WiFi)</button>
     <p class="hint">Do this at home. After it finishes, nothing downloads again, with or without signal.</p>`, async () => {
     $("readyRun").onclick = () => { autoStock(); runChecks(); };
-    $("reportBtn").onclick = async () => {
-      const est = navigator.storage && navigator.storage.estimate ? await navigator.storage.estimate().catch(() => null) : null;
-      const cached = []; for (const k of Object.keys(LANGS)) if ((await MT.isCached(toEnPair(k))) && (await MT.isCached(fromEnPair(k)))) cached.push(k);
-      let perms = ""; try { if (navigator.permissions) { const c = await navigator.permissions.query({ name: "camera" }).catch(() => null), m = await navigator.permissions.query({ name: "microphone" }).catch(() => null); perms = `camera ${c ? c.state : "?"}, mic ${m ? m.state : "?"}`; } } catch (_) {}
-      const txt = ["Traveslator report v" + APP_VERSION, "device: " + navigator.userAgent, "home screen: " + !!(window.matchMedia("(display-mode: standalone)").matches || navigator.standalone), "online: " + navigator.onLine, "language: " + lang + (autoLang ? " (auto)" : ""), "state: " + JSON.stringify(res), "packs on phone: " + (cached.join(", ") || "none") + "; listening pack: " + !!store.get("asr"), "live recognizer: " + !!SR + "; voices: " + (window.speechSynthesis ? speechSynthesis.getVoices().length : "n/a"), "permissions: " + (perms || "unknown"), "storage: " + (est ? Math.round((est.usage || 0) / 1048576) + " MB used of " + Math.round((est.quota || 0) / 1048576) + " MB" : "unknown"), "wasm simd: " + (() => { try { return WebAssembly.validate(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3, 2, 1, 0, 10, 10, 1, 8, 0, 65, 0, 253, 15, 253, 98, 11])); } catch (_) { return false; } })() + "; unpack: " + (typeof DecompressionStream !== "undefined"), "errors: " + (errlog.length ? "\n  " + errlog.join("\n  ") : "none")].join("\n");
-      if (navigator.share) { try { await navigator.share({ title: "Traveslator report", text: txt }); return; } catch (_) {} }
-      try { await navigator.clipboard.writeText(txt); toast("Report copied. Paste it into a message."); } catch (_) { openSheet(`<h2>Report</h2><pre style="white-space:pre-wrap;font-size:12px">${esc(txt)}</pre>`); }
-    };
+    $("reportBtn").onclick = () => sendReport();
     runChecks();
     const packEls = sheet.querySelectorAll(".pack");
     for (const el of packEls) { const k = el.dataset.k; const ok = (await MT.isCached(toEnPair(k))) && (await MT.isCached(fromEnPair(k))) && store.get("ocr." + LANGS[k].tess); const st = el.querySelector(".st"); st.textContent = ok ? "Ready" : "Tap to download"; st.classList.toggle("ok", !!ok); if (ok) el.querySelector(".bar i").style.width = "100%"; el.onclick = () => { if (!ok) downloadLang(k, el); }; }
@@ -899,13 +905,14 @@ function compatCheck() {
   if (!problems.length && !inApp) return true;
   const host = inApp ? `<p>This opened inside another app's built-in browser, which blocks the camera and offline storage.</p><p><b>Open it in ${/iPhone|iPad/.test(ua) ? "Safari" : "Chrome"} instead:</b> tap the menu (··· or the share icon) and choose <b>Open in browser</b>, or copy the address and paste it into ${/iPhone|iPad/.test(ua) ? "Safari" : "Chrome"}.</p>` : "";
   const list = problems.map(p => `<p>${esc(p)}</p>`).join("");
-  openSheet(`<div class="label">Can't run here</div><h2 style="margin:4px 0 10px">${inApp ? "Open in your browser" : "This phone can't run Traveslator"}</h2>${host}${list}<p class="sub" style="margin-top:12px">Address: <b>traveslator.github.io</b><br>Diagnostic: ${esc(ua.slice(0, 160))}</p><button class="btn" id="copyAddr">Copy address</button>`, () => { $("copyAddr").onclick = () => { navigator.clipboard && navigator.clipboard.writeText("https://traveslator.github.io/").then(() => toast("Copied")).catch(() => {}); }; });
+  openSheet(`<div class="label">Can't run here</div><h2 style="margin:4px 0 10px">${inApp ? "Open in your browser" : "This phone can't run Traveslator"}</h2>${host}${list}<p class="sub" style="margin-top:12px">Address: <b>traveslator.github.io</b><br>Diagnostic: ${esc(ua.slice(0, 160))}</p><button class="btn" id="copyAddr">Copy address</button><button class="btn ghost" id="repBtn2">Show report</button>`, () => { $("repBtn2").onclick = () => sendReport(true); $("copyAddr").onclick = () => { navigator.clipboard && navigator.clipboard.writeText("https://traveslator.github.io/").then(() => toast("Copied")).catch(() => {}); }; });
   return !problems.length;
 }
 (async () => {
   if (store.get("asr")) { /* cached before; mark ready lazily when the worker confirms */ }
   renderOrderBar(); updateReady();
   showView(store.get("view", "camera"));
+  if (/[?#]report/.test(location.search + location.hash)) { setTimeout(() => sendReport(true), 2500); }
   if (!compatCheck()) return;
   autoStock();
   const standalone = window.matchMedia("(display-mode: standalone)").matches || navigator.standalone;
