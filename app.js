@@ -1,7 +1,11 @@
 /* Traveslator. Everything runs on the phone: OCR (Tesseract), translation (Bergamot), offline speech (Whisper). */
 (() => {
 "use strict";
+const APP_VERSION = "8";
 const $ = id => document.getElementById(id);
+const errlog = []; function logErr(kind, msg) { errlog.push(new Date().toISOString().slice(11, 19) + " " + kind + ": " + String(msg).slice(0, 200)); if (errlog.length > 25) errlog.shift(); }
+window.addEventListener("error", e => logErr("error", (e.message || "") + " @" + (e.filename || "").split("/").pop() + ":" + e.lineno));
+window.addEventListener("unhandledrejection", e => logErr("promise", e.reason && (e.reason.message || e.reason)));
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const store = {
   get(k, d) { try { const v = localStorage.getItem("tv." + k); return v == null ? d : JSON.parse(v); } catch (_) { return d; } },
@@ -172,7 +176,20 @@ function getAsrWorker() {
   return asrWorker;
 }
 function asrCall(msg) { getAsrWorker(); return new Promise((resolve, reject) => { const id = ++asrSeq; asrPending.set(id, { resolve, reject }); asrWorker.postMessage({ id, ...msg }); }); }
-async function prefetchAsr() { try { await loadAsr(); if (listening == null && asrWorker) { const w = asrWorker; asrWorker = null; w.terminate(); } } catch (e) { console.warn("asr prefetch", e); } }
+/* Quietly puts the listening pack's files on the phone without starting the model (keeps memory low while the camera runs).
+   The files land in the same cache the speech engine reads from, so the first real use loads instantly. */
+const ASR_FILES = ["tokenizer_config.json", "tokenizer.json", "config.json", "preprocessor_config.json", "generation_config.json", "onnx/encoder_model_quantized.onnx", "onnx/decoder_model_merged_quantized.onnx"].map(f => "https://huggingface.co/onnx-community/whisper-base/resolve/main/" + f);
+let asrPrefetching = false;
+async function prefetchAsr() {
+  if (asrPrefetching || store.get("asr") || !navigator.onLine) return; asrPrefetching = true;
+  try {
+    const c = await caches.open("transformers-cache");
+    for (const u of ASR_FILES) { if (await c.match(u)) continue; const r = await fetch(u); if (!r.ok) throw new Error("asr file " + r.status); const len = r.headers.get("Content-Length"); const h = { "Content-Type": r.headers.get("Content-Type") || "application/octet-stream" }; if (len) h["Content-Length"] = len; await c.put(u, len ? new Response(r.body, { status: 200, headers: h }) : new Response(await r.arrayBuffer(), { status: 200, headers: h })); }
+    // the speech runtime itself, so first use works with no signal (the service worker keeps these)
+    for (const u of ["https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.3.3/dist/ort-wasm-simd-threaded.jsep.mjs", "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.3.3/dist/ort-wasm-simd-threaded.jsep.wasm"]) { try { await (await fetch(u)).arrayBuffer(); } catch (_) {} }
+    store.set("asr", true); updateReady();
+  } catch (e) { console.warn("asr prefetch", e); } finally { asrPrefetching = false; }
+}
 async function loadAsr() { if (res.asr === "ok") return; res.asr = "busy"; updateReady(); try { await asrCall({ type: "load" }); res.asr = "ok"; } catch (e) { res.asr = "no"; throw e; } finally { updateReady(); } }
 
 /* First open: stock the current language, with one progress strip. */
@@ -290,7 +307,7 @@ function parsePrice(text) {
 /* ---------------- Camera pipeline ---------------- */
 const video = $("video"), overlay = $("overlay"), stage = $("stage"), hint = $("hint");
 let stream = null, frozen = false, camMode = store.get("camMode", "text"), ocrBusy = false, ocrTimer = null, raf = null;
-const regions = []; let regionSeq = 0; window.__regions = regions; window.__state = () => ({ ocr: !!ocrWorker, probing, lastProbe: Math.round(lastProbe), rs: video.readyState, busy: ocrBusy, res: { ...res }, stream: !!stream, timer: !!ocrTimer, view });
+const regions = []; let regionSeq = 0; window.__regions = regions; window.__state = () => ({ ocr: !!ocrWorker, probing, asrPrefetching, lastProbe: Math.round(lastProbe), rs: video.readyState, busy: ocrBusy, res: { ...res }, stream: !!stream, timer: !!ocrTimer, view });
 const work = document.createElement("canvas"), colorWork = document.createElement("canvas"); const thumbA = document.createElement("canvas"), thumbB = document.createElement("canvas");
 const TW = 80, TH = 45; let prevThumb = null, motionAcc = { x: 0, y: 0 };
 function setHint(t, ms = 2000) { hint.textContent = t; hint.classList.toggle("on", !!t); clearTimeout(setHint.t); if (t && ms) setHint.t = setTimeout(() => hint.classList.remove("on"), ms); }
@@ -799,12 +816,21 @@ async function openReadiness() {
     <div class="ready" id="readyRows">${rows.map(r => `<div><span>${esc(r[0])}</span><span class="st" id="rc-${r[1]}">Checking…</span></div>`).join("")}</div>
     <div class="card" id="readyNote"><div class="t">Checking…</div><div class="d"></div></div>
     <button class="btn" id="readyRun">Run the checks again</button>
+    <button class="btn ghost" id="reportBtn">Something's wrong? Send a report</button>
     <div class="hr"></div>
     <div class="eyebrow">Other languages</div>
     <div class="packs" id="packs">${otherLangs.map(k => `<div class="pack" data-k="${k}"><span class="n">${esc(LANGS[k].label)}</span><span class="st">…</span><span class="d">Camera, conversation and phrases. About ${PACK_MB[k]} MB.</span><span class="bar"><i></i></span></div>`).join("")}</div>
     <button class="btn" id="dlAll">Set up for travel: every language + offline speech (about ${Object.values(PACK_MB).reduce((a, b) => a + b, 0) + 80} MB, once, on WiFi)</button>
     <p class="hint">Do this at home. After it finishes, nothing downloads again, with or without signal.</p>`, async () => {
     $("readyRun").onclick = () => { autoStock(); runChecks(); };
+    $("reportBtn").onclick = async () => {
+      const est = navigator.storage && navigator.storage.estimate ? await navigator.storage.estimate().catch(() => null) : null;
+      const cached = []; for (const k of Object.keys(LANGS)) if ((await MT.isCached(toEnPair(k))) && (await MT.isCached(fromEnPair(k)))) cached.push(k);
+      let perms = ""; try { if (navigator.permissions) { const c = await navigator.permissions.query({ name: "camera" }).catch(() => null), m = await navigator.permissions.query({ name: "microphone" }).catch(() => null); perms = `camera ${c ? c.state : "?"}, mic ${m ? m.state : "?"}`; } } catch (_) {}
+      const txt = ["Traveslator report v" + APP_VERSION, "device: " + navigator.userAgent, "home screen: " + !!(window.matchMedia("(display-mode: standalone)").matches || navigator.standalone), "online: " + navigator.onLine, "language: " + lang + (autoLang ? " (auto)" : ""), "state: " + JSON.stringify(res), "packs on phone: " + (cached.join(", ") || "none") + "; listening pack: " + !!store.get("asr"), "live recognizer: " + !!SR + "; voices: " + (window.speechSynthesis ? speechSynthesis.getVoices().length : "n/a"), "permissions: " + (perms || "unknown"), "storage: " + (est ? Math.round((est.usage || 0) / 1048576) + " MB used of " + Math.round((est.quota || 0) / 1048576) + " MB" : "unknown"), "wasm simd: " + (() => { try { return WebAssembly.validate(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3, 2, 1, 0, 10, 10, 1, 8, 0, 65, 0, 253, 15, 253, 98, 11])); } catch (_) { return false; } })() + "; unpack: " + (typeof DecompressionStream !== "undefined"), "errors: " + (errlog.length ? "\n  " + errlog.join("\n  ") : "none")].join("\n");
+      if (navigator.share) { try { await navigator.share({ title: "Traveslator report", text: txt }); return; } catch (_) {} }
+      try { await navigator.clipboard.writeText(txt); toast("Report copied. Paste it into a message."); } catch (_) { openSheet(`<h2>Report</h2><pre style="white-space:pre-wrap;font-size:12px">${esc(txt)}</pre>`); }
+    };
     runChecks();
     const packEls = sheet.querySelectorAll(".pack");
     for (const el of packEls) { const k = el.dataset.k; const ok = (await MT.isCached(toEnPair(k))) && (await MT.isCached(fromEnPair(k))) && store.get("ocr." + LANGS[k].tess); const st = el.querySelector(".st"); st.textContent = ok ? "Ready" : "Tap to download"; st.classList.toggle("ok", !!ok); if (ok) el.querySelector(".bar i").style.width = "100%"; el.onclick = () => { if (!ok) downloadLang(k, el); }; }

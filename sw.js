@@ -1,5 +1,5 @@
 /* Service worker: app shell precached; OCR data and runtime cached on first use. Translation models are cached by mt.js in Cache storage. */
-const VERSION = "tv-v8";
+const VERSION = "tv-v9";
 const SHELL = ["./", "./index.html", "./app.js", "./mt.js", "./glossary.js", "./asr-worker.js", "./manifest.webmanifest",
   "./vendor/bergamot/translator-worker.js", "./vendor/bergamot/bergamot-translator-worker.js", "./vendor/bergamot/bergamot-translator-worker.wasm",
   "./icons/icon-192.png", "./icons/icon-512.png", "./icons/maskable-512.png", "./icons/apple-touch-icon.png", "./tessdata/eng.traineddata.gz",
